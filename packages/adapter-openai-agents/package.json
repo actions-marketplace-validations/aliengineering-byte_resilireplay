@@ -32,6 +32,6 @@
     "@openai/agents": "0.14.3",
     "@resilireplay/trace": "workspace:*",
     "vitest": "3.2.6",
-    "zod": "4.4.3"
+    "zod": "4.5.4"
   }
 }
