@@ -2,6 +2,98 @@
 
 All notable changes follow Keep a Changelog principles. The project uses semantic versioning.
 
+## [0.7.1] - 2026-09-02
+
+### Added
+
+- Official MCP Registry metadata for the existing safe stdio server, including npm ownership metadata.
+- Agent-discoverable, attributed evidence verification with project-root containment and bounded results.
+- `campaign verify` and `mcp verify-evidence` fail-closed commands for portable campaign and deterministic MCP demo receipts.
+
+### Changed
+
+- MCP tool results now carry machine-readable repository, version, capability, evidence, reproduction, and documentation attribution.
+- The public npm smoke publishes Registry metadata only after the exact provenance-backed package is installable.
+
+## [0.7.0] - 2026-08-28
+
+### Added
+
+- MCP-first `mcp demo`, `mcp test`, and `mcp validate` workflows with stable JSON evidence,
+  reviewed plan digests, bounded retries, duplicate-effect counts, and generated regressions.
+- Standalone packed-package CI against the pinned official MCP Everything server, including clean
+  installation, real stdio discovery/call, deterministic failure, cleanup, and privacy checks.
+- Packed-package terminal transcript, accessible static image, and animated product demo.
+
+### Changed
+
+- README, website, CLI help, npm metadata, and repository positioning now lead with MCP reliability.
+- MCP evidence persistence removes tool arguments and result bodies before reports are written.
+- Dependabot runs monthly with one grouped patch/minor PR per ecosystem.
+- npm release publishing verifies an annotated tag and exact tarball before OIDC trusted publishing.
+
+### Compatibility
+
+- `mcp audit`, campaigns, replay, reports, Studio, agent capture, adapters, and the hidden root
+  `demo` alias remain available. MCP-RES v0.1 and v0.2 normative trees are unchanged.
+
+### Security
+
+- Persistent demo output is contained, idempotent for byte-identical bundles, conflict-safe for
+  mismatches, and completion-manifest-last.
+- Real MCP execution requires one explicit tool, a safety classification, finite bounds, and the
+  exact SHA-256 of the reviewed dry-run plan.
+- Current registry advisories are resolved with patch-only Vitest, YAML, and transitive dependency
+  updates; the published CLI API and supported runtime range are unchanged.
+
+## [0.6.0] - 2026-08-07
+
+### Added
+
+- Versioned framework event contract, neutral OTLP/JSONL bridge, public adapter registry, and
+  deterministic framework campaign templates.
+- Genuine local runtime adapters for LangGraph 1.4.9 and OpenAI Agents SDK 0.14.3.
+- AutoGen OTLP bridge profile plus documented-only CrewAI and LlamaIndex callback mappings.
+- Explicit framework detection/override/doctor CLI commands and a no-key framework-layer demo.
+- Optional semantic advisor plugin boundary that is disabled by default and cannot override
+  deterministic policy.
+
+### Changed
+
+- Product, package, CLI, Studio, campaign, report, and schema artifact release identity is 0.6.0.
+- Framework support claims now carry explicit runtime, fixture, documented, or unsupported evidence.
+
+## [0.5.0] - 2026-08-05
+
+### Added
+
+- One bounded, sanitized agent-event core with versioned capture-session, failure-evidence, and
+  adapter-manifest schemas.
+- Opt-in passive capture, evidence inspection, regression generation, safe repository-local agent
+  connection with dry-run/backup/rollback, and adapter init/verification commands.
+- A nine-tool annotated stdio MCP server and a validated portable Agent Skill shipped inside the
+  npm package.
+- Installable Claude Code and Codex plugins backed by one shared hook runtime, plus documented and
+  isolated Hermes Agent skill/MCP integration.
+- A conformance-tested minimal adapter, compatibility badge rules, synthetic Hugging Face dataset,
+  and no-key static demonstration Space source.
+- A genuine controlled-failure-to-passing-regression demo with transcript, PNG, GIF, and standalone
+  artifacts.
+
+### Security
+
+- Capture remains off by default and excludes raw prompts, transcripts, credentials, environment
+  values, personal paths, and unrestricted tool bodies.
+- Bounded stdin, events, summaries, journals, and generated artifacts; deterministic deduplication;
+  atomic writes; corruption recovery; and symlink/junction containment.
+- Passive hooks never retry operations, and MCP execution paths require exact reviewed hashes before
+  running a target or writing a regression.
+
+### Changed
+
+- All current product, package, Action, Studio, campaign, and report versions are aligned at 0.5.0
+  while v0.4 campaign inputs and CLI workflows remain backward compatible.
+
 ## [0.4.0] - 2026-08-05
 
 ### Added

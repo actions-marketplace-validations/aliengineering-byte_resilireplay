@@ -1,48 +1,35 @@
-# resilireplay
+# ResiliReplay
 
-The self-contained ResiliReplay CLI. Turn a reviewed MCP server into deterministic recovery evidence,
-an executable regression, and a pinned GitHub Action without an account or hosted service.
-
-Requires Node.js 22 or 24.
+Inject deterministic MCP failures, verify bounded recovery and duplicate-effect behavior, and turn
+causal failures into executable regression tests.
 
 ```console
-npm install --global resilireplay
-resilireplay --help
+npx --yes resilireplay@latest mcp demo
 ```
 
-Or run a pinned version without installing globally:
+The demo is a bundled local fixture: no config, account, credential, paid model, telemetry, or remote
+target. It runs a clean call, reproduces one deterministic failure, retries once, records zero
+duplicate effects, generates and executes a regression, prints an evidence digest, and cleans up.
+
+Test a reviewed server without starting it:
 
 ```console
-npx --yes resilireplay@0.4.0 demo
+npx --yes resilireplay@latest mcp test --config ./mcp.json --server my-server --tool echo --safety inert --dry-run
 ```
 
-Review an existing repository-local Inspector-compatible MCP configuration without side effects,
-then create commit-ready recovery CI:
+Repeat the displayed plan with `--approve <plan-sha256>` to execute it. `--json`, `--output`,
+`--no-regression`, `--timeout`, and `--retries` map to the same bounded engine. The existing
+`mcp audit` workflow remains supported.
 
 ```console
-npx --yes resilireplay@0.4.0 adopt --config ./mcp.json --dry-run
-npx --yes resilireplay@0.4.0 adopt --config ./mcp.json
-git add .resilireplay tests/resilireplay .github/workflows/resilireplay.yml
+npx --yes resilireplay@latest mcp serve --help
 ```
 
-Or start Studio and inspect campaign commands:
+Node.js 22 and 24 are supported. Evidence persists metadata and hashes instead of unrestricted tool
+bodies or credentials. Remote targets retain explicit ownership controls.
 
-```console
-resilireplay studio --open
-resilireplay campaign --help
-```
+Agent-runtime capture, campaigns, replay, Studio, adapters, MCP-RES v0.1/v0.2, security guidance,
+and the real packed-package MCP Everything example are documented in the
+[repository README](https://github.com/aliengineering-byte/resilireplay#readme).
 
-Audit only local or user-owned MCP targets. Dry-run an existing MCP Inspector configuration before
-allowing any tool calls:
-
-```console
-resilireplay mcp audit --inspector-config ./mcp.json --server my-server --dry-run
-```
-
-`adopt` searches only the current project allowlist and never trusts MCP tool annotations as
-authorization. The exact tool, arguments, and one-duplicate safety boundary require review;
-`--yes` cannot bypass them. Generated evidence is metadata-only and omits raw MCP bodies, headers,
-and environment values. Studio binds only to loopback. ResiliReplay is not an OS sandbox.
-
-Documentation, source, and deterministic demos:
-[github.com/aliengineering-byte/resilireplay](https://github.com/aliengineering-byte/resilireplay)
+Apache-2.0.

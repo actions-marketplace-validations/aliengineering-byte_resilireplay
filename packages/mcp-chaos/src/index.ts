@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   StdioClientTransport,
@@ -10,9 +10,11 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   calculateMetrics,
+  PRODUCT_VERSION,
   containsLikelySecret,
   createEvent,
   injectFaults,
+  prepareContainedOutputDirectory,
   safeOutputPath,
   sanitize,
   stableStringify,
@@ -115,6 +117,11 @@ export interface McpAuditResult {
   sourceConfigSha256?: string;
   recovery: { attempted: boolean; succeeded: boolean };
   secretOutputDetected: boolean;
+  cleanup: {
+    clientClosed: boolean;
+    childProcessExited: boolean;
+    listenerCountsRestored: boolean;
+  };
 }
 
 export class McpConnectionError extends Error {
@@ -265,6 +272,20 @@ function exampleForSchema(schema: unknown): Record<string, unknown> {
       return [name, value];
     }),
   );
+}
+
+async function waitForChildExit(pid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, 10);
+    });
+  }
+  return false;
 }
 
 function inspectText(text: string, tool: string | undefined, findings: McpFinding[]): void {
@@ -490,7 +511,15 @@ export async function auditMcp(options: McpAuditOptions): Promise<McpAuditResult
       "RR_MCP_TOOL_ALLOWLIST",
     );
   }
-  const client = new Client({ name: "resilireplay", version: "0.4.0" }, { capabilities: {} });
+  const client = new Client(
+    { name: "resilireplay", version: PRODUCT_VERSION },
+    { capabilities: {} },
+  );
+  const observedSignals = ["SIGINT", "SIGTERM", "uncaughtException", "unhandledRejection"] as const;
+  const listenerBaseline = Object.fromEntries(
+    observedSignals.map((signal) => [signal, process.listenerCount(signal)]),
+  );
+  let completedResult: McpAuditResult | undefined;
   let secretOutputDetected = false;
   let recoveryAttempted = false;
   let recoveredFaultCount = 0;
@@ -716,7 +745,7 @@ export async function auditMcp(options: McpAuditOptions): Promise<McpAuditResult
       }),
     );
     const passed = passedBeforeMetrics && calculateMetrics(events, { retryBudget }).passed;
-    return {
+    completedResult = {
       target,
       transport: transportName,
       tools,
@@ -728,7 +757,13 @@ export async function auditMcp(options: McpAuditOptions): Promise<McpAuditResult
       ...(options.sourceConfigSha256 ? { sourceConfigSha256: options.sourceConfigSha256 } : {}),
       recovery: { attempted: recoveryAttempted, succeeded: recoverySucceeded },
       secretOutputDetected,
+      cleanup: {
+        clientClosed: false,
+        childProcessExited: transportName !== "stdio",
+        listenerCountsRestored: false,
+      },
     };
+    return completedResult;
   } catch (error) {
     if (
       error instanceof McpInspectorConfigError ||
@@ -742,12 +777,23 @@ export async function auditMcp(options: McpAuditOptions): Promise<McpAuditResult
       cause: error,
     });
   } finally {
+    const childPid = transport instanceof StdioClientTransport ? transport.pid : null;
     await client.close().catch(() => undefined);
+    const childProcessExited = childPid === null ? true : await waitForChildExit(childPid);
+    if (completedResult) {
+      completedResult.cleanup = {
+        clientClosed: true,
+        childProcessExited,
+        listenerCountsRestored: observedSignals.every(
+          (signal) => process.listenerCount(signal) === listenerBaseline[signal],
+        ),
+      };
+    }
   }
 }
 
 function certificationBadge(passed: boolean): string {
-  const value = passed ? "passing v0.4.0" : "findings v0.4.0";
+  const value = passed ? `passing v${PRODUCT_VERSION}` : `findings v${PRODUCT_VERSION}`;
   const color = passed ? "#159957" : "#c0392b";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="276" height="20" role="img" aria-label="MCP Chaos Tested: ${value}"><rect width="164" height="20" rx="3" fill="#555"/><rect x="164" width="112" height="20" rx="3" fill="${color}"/><g fill="#fff" text-anchor="middle" font-family="Verdana,sans-serif" font-size="11"><text x="82" y="15">MCP Chaos Tested</text><text x="220" y="15">${value}</text></g></svg>\n`;
 }
@@ -756,15 +802,18 @@ export async function writeMcpCertification(
   result: McpAuditResult,
   directoryInput: string,
 ): Promise<{ jsonPath: string; htmlPath: string; badgePath: string }> {
-  const directory = resolve(directoryInput);
-  await mkdir(directory, { recursive: true });
+  const requestedDirectory = resolve(directoryInput);
+  const directory = await prepareContainedOutputDirectory(
+    dirname(requestedDirectory),
+    requestedDirectory,
+  );
   const jsonPath = safeOutputPath(directory, "mcp-certification.json");
   const htmlPath = safeOutputPath(directory, "mcp-certification.html");
   const badgePath = safeOutputPath(directory, "mcp-badge.svg");
   const json = `${stableStringify({
     schemaVersion: "1.0",
     product: "ResiliReplay",
-    version: "0.4.0",
+    version: PRODUCT_VERSION,
     scope:
       "Evidence for this declared local suite and version; not a universal security certification.",
     ...result,

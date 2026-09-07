@@ -8,7 +8,10 @@ const html = await readFile(htmlPath, "utf8");
 const readme = await readFile(join(root, "README.md"), "utf8");
 const packageReadme = await readFile(join(root, "packages", "cli", "README.md"), "utf8");
 const adoptGuide = await readFile(join(docs, "ADOPT.md"), "utf8");
-const demoTranscript = await readFile(join(docs, "assets", "adopt-demo-transcript.txt"), "utf8");
+const demoTranscript = await readFile(
+  join(docs, "assets", "mcp-demo-v0.7.0-transcript.txt"),
+  "utf8",
+);
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -24,31 +27,89 @@ invariant(
   !/(google-analytics|googletagmanager|segment\.com|posthog|mixpanel)/iu.test(html),
   "Analytics are not allowed",
 );
-for (const [name, content] of [
-  ["README", readme],
-  ["npm README", packageReadme],
-  ["adoption guide", adoptGuide],
-  ["landing page", html],
+for (const [name, content, demoCommand] of [
+  ["README", readme, "resilireplay@0.7.1 mcp demo"],
+  ["npm README", packageReadme, "resilireplay@latest mcp demo"],
+  ["landing page", html, "resilireplay@latest mcp demo"],
 ]) {
   invariant(
-    content.includes("resilireplay@0.4.0 demo"),
-    `${name} must include the shipped v0.4.0 demo command`,
+    content.includes(demoCommand),
+    `${name} must include the MCP-first public demo command`,
   );
   invariant(
-    content.includes("resilireplay@0.4.0 adopt"),
-    `${name} must include the shipped v0.4.0 adopt command`,
+    content.includes("resilireplay@latest mcp test"),
+    `${name} must include the reviewed real-server command`,
+  );
+  invariant(
+    content.indexOf(demoCommand) < content.indexOf("resilireplay@latest mcp test"),
+    `${name} must present mcp demo before other public commands`,
   );
 }
-invariant(html.includes("assets/adopt-demo.gif"), "Landing page must use the genuine demo GIF");
 invariant(
-  html.includes("assets/adopt-demo.png"),
-  "Landing page must link the static demo fallback",
+  readme.includes("quickstart pins the released `0.7.1` artifact") &&
+    readme.includes("Later `@latest` examples are"),
+  "README must distinguish the reproducible release pin from @latest convenience commands",
 );
 invariant(
-  demoTranscript.includes("PASS ResiliReplay demo completed in ") &&
-    demoTranscript.includes("Generated regression executed successfully") &&
-    demoTranscript.includes("captureWallMs="),
-  "Genuine packed-package demo transcript is incomplete",
+  adoptGuide.includes("resilireplay@0.4.0 adopt"),
+  "Historical v0.4 adoption guide lost its pinned command",
+);
+invariant(
+  html.includes("assets/mcp-demo-v0.7.0.gif"),
+  "Landing page must use the packed-package MCP demo GIF",
+);
+invariant(
+  html.includes("assets/mcp-demo-v0.7.0.png"),
+  "Landing page must link the packed-package static fallback",
+);
+invariant(
+  readme.includes("examples/mcp-reliability-ci/README.md") &&
+    readme.includes("@modelcontextprotocol/server-everything@2026.8.18"),
+  "README must link the pinned real MCP example",
+);
+invariant(
+  html.includes('href="standards/mcp-res/"') &&
+    readme.includes("docs/standards/mcp-res/README.md") &&
+    readme.includes("MCP-RES is independent of the official MCP specification") &&
+    html.includes("independent of the official MCP specification"),
+  "MCP-RES v0.2 or its required disclaimer is missing",
+);
+const mcpResPagePath = join(docs, "standards", "mcp-res", "index.html");
+const mcpResPage = await readFile(mcpResPagePath, "utf8");
+invariant(mcpResPage.includes('<html lang="en">'), "MCP-RES page must declare its language");
+invariant(mcpResPage.includes('rel="canonical"'), "MCP-RES page needs a canonical URL");
+invariant(mcpResPage.includes('http-equiv="Content-Security-Policy"'), "MCP-RES page needs a CSP");
+invariant(!/<script\b/iu.test(mcpResPage), "MCP-RES page must not execute scripts");
+invariant(
+  !/(google-analytics|googletagmanager|segment\.com|posthog|mixpanel)/iu.test(mcpResPage),
+  "MCP-RES page must not use analytics",
+);
+for (const phrase of [
+  "Problem and boundary",
+  "Who can implement",
+  "Initial profiles",
+  "Validate safe bundled evidence",
+  "Independent implementation",
+  "Reference, not dependency",
+  "Change control and 1.0",
+]) {
+  invariant(mcpResPage.includes(phrase), `MCP-RES page is missing: ${phrase}`);
+}
+invariant(
+  demoTranscript.includes("npx --yes resilireplay@latest mcp demo") &&
+    demoTranscript.includes("Duplicate effects observed: 0") &&
+    demoTranscript.includes("Regression executed") &&
+    !/[A-Z]:\\Users\\/u.test(demoTranscript),
+  "Packed-package MCP demo transcript is incomplete or unsanitized",
+);
+
+const readmeLines = readme.split(/\r?\n/u);
+invariant(readmeLines.length >= 200 && readmeLines.length <= 300, "README must be 200–300 lines");
+invariant(
+  !/(?:^|\n)(?:#+\s+Architecture|.*framework matrix|git clone|pnpm install)/iu.test(
+    readmeLines.slice(0, 120).join("\n"),
+  ),
+  "README first 120 lines contain secondary architecture or maintainer onboarding",
 );
 
 const ids = new Set([...html.matchAll(/\bid="([^"]+)"/gu)].map((match) => match[1]));
@@ -69,7 +130,11 @@ for (const reference of references) {
   const target = resolve(dirname(htmlPath), clean);
   invariant(target.startsWith(`${docs}${sep}`), `Local reference escapes docs: ${reference}`);
   await access(target);
-  invariant((await stat(target)).size > 0, `Local reference is empty: ${reference}`);
+  const targetStat = await stat(target);
+  invariant(
+    targetStat.isDirectory() || targetStat.size > 0,
+    `Local reference is empty: ${reference}`,
+  );
 }
 
 const images = [...html.matchAll(/<img\b[^>]*>/giu)];
@@ -86,6 +151,10 @@ invariant(
 invariant(
   sitemap.includes("https://aliengineering-byte.github.io/resilireplay/"),
   "sitemap canonical URL is wrong",
+);
+invariant(
+  sitemap.includes("https://aliengineering-byte.github.io/resilireplay/standards/mcp-res/"),
+  "sitemap is missing the MCP-RES landing page",
 );
 
 console.log(`Landing page verified: ${references.length} references, ${ids.size} section targets`);

@@ -1,5 +1,7 @@
-import { access, mkdir, readdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, extname, join } from "node:path";
+import { access, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline/promises";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { parse } from "yaml";
@@ -10,6 +12,9 @@ import {
   FaultScenarioSchema,
   calculateMetrics,
   injectFaults,
+  prepareContainedOutputDirectory,
+  prepareContainedOutputFile,
+  resolveContainedOutputPath,
   safeOutputPath,
   stableStringify,
   type FaultScenario,
@@ -17,6 +22,7 @@ import {
 import {
   auditMcp,
   loadInspectorConfig,
+  metadataOnlyMcpEvidence,
   MCP_EXIT_CODES,
   MCP_FAULT_TYPES,
   McpInspectorConfigError,
@@ -49,8 +55,37 @@ import {
   writeCampaignRunReports,
 } from "@resilireplay/campaign";
 import { startStudio } from "@resilireplay/studio";
-import { demoTerminalReport, runDemo } from "./demo.js";
+import {
+  adapterTemplates,
+  createAdapterRegistry,
+  frameworkSupportProfiles,
+  renderTemplateArtifact,
+  templateById,
+} from "@resilireplay/adapter-sdk";
+import { demoTerminalReport, runDemo, verifyDemoEvidence } from "./demo.js";
+import {
+  MCP_TEST_SAFETY_CLASSES,
+  mcpTestPlanReport,
+  mcpTestTerminalReport,
+  planMcpTest,
+  runMcpTest,
+} from "./mcp-test.js";
 import { adoptTerminalReport, runAdopt, type AdoptOptions } from "./adopt.js";
+import {
+  captureLast,
+  captureStart,
+  captureStatus,
+  captureStop,
+  connectAgent,
+  generateCapturedRegression,
+  initAdapter,
+  planConnection,
+  rollbackConnection,
+  runPluginHook,
+  verifyAdapter,
+  type ConnectAgent,
+} from "@resilireplay/agent";
+import { serveResiliReplayMcp } from "./agent-mcp.js";
 
 async function exists(path: string): Promise<boolean> {
   return access(path).then(
@@ -63,10 +98,33 @@ function boundedPath(candidate: string): string {
   return safeOutputPath(process.cwd(), candidate);
 }
 
+async function boundedOutputDirectory(candidate: string): Promise<string> {
+  return prepareContainedOutputDirectory(process.cwd(), candidate);
+}
+
+async function boundedOutputFile(candidate: string): Promise<string> {
+  return prepareContainedOutputFile(process.cwd(), candidate);
+}
+
 async function persistedRunPath(input: string): Promise<string> {
-  const path = boundedPath(input);
-  const information = await stat(path);
-  return information.isDirectory() ? join(path, "campaign-run.json") : path;
+  const root = await realpath(resolve(process.cwd()));
+  const lexical = boundedPath(input);
+  const selected = (await stat(lexical)).isDirectory()
+    ? join(lexical, "campaign-run.json")
+    : lexical;
+  const actual = await realpath(selected);
+  const relationship = relative(root, actual);
+  if (
+    relationship === ".." ||
+    relationship.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(relationship)
+  ) {
+    throw Object.assign(new Error("Campaign evidence resolves outside the repository root"), {
+      exitCode: CAMPAIGN_EXIT_CODES.AUTHORIZATION,
+    });
+  }
+  if (!(await stat(actual)).isFile()) throw new Error("Campaign evidence is not a file");
+  return actual;
 }
 
 function openBrowser(url: string): void {
@@ -151,29 +209,148 @@ async function runScenarioDirectory(directoryInput: string): Promise<{
 export function createProgram(): Command {
   const program = new Command()
     .name("resilireplay")
-    .description(
-      "Crash-test AI agents and MCP servers, replay failures, and generate regression tests.",
-    )
+    .description("Test MCP failure recovery and turn failures into executable regressions.")
     .version(PRODUCT_VERSION);
 
-  program
-    .command("demo")
-    .description("Run a zero-configuration deterministic recovery demo.")
-    .option("--json", "Print one machine-readable JSON result")
-    .option("-o, --output <directory>", "Keep generated evidence and regression artifacts")
-    .option("--no-color", "Disable ANSI color")
-    .option("--seed <number>", "Deterministic seed", "42")
-    .action(async (options: { json?: boolean; output?: string; color: boolean; seed: string }) => {
-      const result = await runDemo({
-        seed: Number(options.seed),
-        ...(options.output ? { outputDirectory: options.output } : {}),
-      });
+  const addDemoCommand = (parent: Command, hidden = false): void => {
+    parent
+      .command("demo", hidden ? { hidden: true } : {})
+      .description("Try a deterministic local MCP reliability test.")
+      .option("--json", "Print one machine-readable JSON result")
+      .option("-o, --output <directory>", "Keep generated evidence and regression artifacts")
+      .option("--keep", "Keep artifacts under .resilireplay/demo")
+      .option("--no-color", "Disable ANSI color")
+      .option("--seed <number>", "Deterministic seed", "42")
+      .action(
+        async (options: {
+          json?: boolean;
+          output?: string;
+          keep?: boolean;
+          color: boolean;
+          seed: string;
+        }) => {
+          if (options.keep && options.output) {
+            throw Object.assign(new Error("Use either --keep or --output, not both"), {
+              exitCode: 2,
+            });
+          }
+          const result = await runDemo({
+            seed: Number(options.seed),
+            ...(options.output
+              ? { outputDirectory: options.output }
+              : options.keep
+                ? { outputDirectory: ".resilireplay/demo" }
+                : {}),
+          });
+          console.log(
+            options.json
+              ? stableStringify(result)
+              : demoTerminalReport(result, options.color && process.env.NO_COLOR === undefined),
+          );
+        },
+      );
+  };
+
+  const mcp = program
+    .command("mcp")
+    .description("Test bounded recovery and regression evidence for MCP servers.");
+  addDemoCommand(mcp);
+  mcp
+    .command("verify-evidence")
+    .description(
+      "Fail closed unless deterministic MCP demo evidence has a valid schema and digest.",
+    )
+    .argument("<evidence>", "project-local MCP demo evidence.json")
+    .option("--json", "Print machine-readable verification")
+    .action(async (evidence: string, options: { json?: boolean }) => {
+      const path = boundedPath(evidence);
+      const verification = await verifyDemoEvidence(path);
+      const attributed = {
+        ...verification,
+        repository: "https://github.com/aliengineering-byte/resilireplay",
+        packageVersion: PRODUCT_VERSION,
+        capability: "verify-resilireplay-evidence",
+      };
       console.log(
         options.json
-          ? stableStringify(result)
-          : demoTerminalReport(result, options.color && process.env.NO_COLOR === undefined),
+          ? stableStringify(attributed)
+          : `Verified ResiliReplay MCP demo evidence sha256:${verification.evidenceSha256}`,
       );
     });
+  mcp
+    .command("test")
+    .description("Test one reviewed MCP tool with a bounded fault and recovery.")
+    .requiredOption("--config <path>", "Reviewed Inspector-compatible mcp.json file")
+    .option("--server <name>", "Named mcpServers entry")
+    .option("--tool <name>", "One reviewed tool allowlist entry")
+    .option(
+      "--safety <classification>",
+      `Tool classification: ${MCP_TEST_SAFETY_CLASSES.join(", ")}`,
+    )
+    .option("--dry-run", "Print a value-free plan without starting or writing anything")
+    .option("--approve <sha256>", "Exact plan digest required for execution")
+    .option("--fault <name>", `Controlled MCP mutation: ${MCP_FAULT_TYPES.join(", ")}`)
+    .option("--retries <number>", "Bounded recovery retry count", "1")
+    .option("--timeout <ms>", "Connection and request timeout", "10000")
+    .option("-o, --output <directory>", "Evidence directory", ".resilireplay/mcp-test")
+    .option("--no-regression", "Do not generate and execute a regression")
+    .option("--json", "Print one machine-readable JSON result")
+    .action(
+      async (options: {
+        config: string;
+        server?: string;
+        tool?: string;
+        safety?: (typeof MCP_TEST_SAFETY_CLASSES)[number];
+        dryRun?: boolean;
+        approve?: string;
+        fault?: (typeof MCP_FAULT_TYPES)[number];
+        retries: string;
+        timeout: string;
+        output: string;
+        regression: boolean;
+        json?: boolean;
+      }) => {
+        const result = await runMcpTest({
+          config: options.config,
+          ...(options.server ? { server: options.server } : {}),
+          ...(options.tool ? { tool: options.tool } : {}),
+          ...(options.safety ? { safety: options.safety } : {}),
+          dryRun: options.dryRun ?? false,
+          ...(options.approve ? { approve: options.approve } : {}),
+          ...(options.fault ? { fault: options.fault } : {}),
+          retries: Number(options.retries),
+          timeoutMs: Number(options.timeout),
+          outputDirectory: options.output,
+          regression: options.regression,
+          json: options.json ?? false,
+        });
+        console.log(
+          options.json
+            ? stableStringify(result)
+            : "result" in result
+              ? mcpTestTerminalReport(result)
+              : mcpTestPlanReport(result, options.config),
+        );
+        if ("result" in result && result.result !== "PASS") process.exitCode = 1;
+      },
+    );
+  mcp
+    .command("validate")
+    .description("Validate an MCP test configuration without starting the target.")
+    .requiredOption("--config <path>", "Reviewed Inspector-compatible mcp.json file")
+    .option("--server <name>", "Named mcpServers entry")
+    .option("--tool <name>", "Optional reviewed tool allowlist entry")
+    .option("--json", "Print one machine-readable JSON plan")
+    .action(async (options: { config: string; server?: string; tool?: string; json?: boolean }) => {
+      const plan = await planMcpTest({
+        config: options.config,
+        ...(options.server ? { server: options.server } : {}),
+        ...(options.tool ? { tool: options.tool } : {}),
+        dryRun: true,
+      });
+      console.log(options.json ? stableStringify(plan) : mcpTestPlanReport(plan, options.config));
+    });
+  addDemoCommand(program, true);
 
   program
     .command("adopt")
@@ -232,6 +409,228 @@ export function createProgram(): Command {
         console.log(options.json ? stableStringify(result) : adoptTerminalReport(result));
       },
     );
+
+  program
+    .command("connect")
+    .description("Safely connect passive ResiliReplay capture to a supported coding agent.")
+    .option("--agent <agent>", "auto, claude-code, codex, or hermes", "auto")
+    .option("--dry-run", "Show the exact repository-local changes without writing files")
+    .option("--yes", "Apply the displayed changes without an interactive prompt")
+    .option("--rollback [backup-id]", "Restore a previous recoverable connection backup")
+    .option("--json", "Print one machine-readable result")
+    .action(
+      async (options: {
+        agent: string;
+        dryRun?: boolean;
+        yes?: boolean;
+        rollback?: string | boolean;
+        json?: boolean;
+      }) => {
+        if (options.rollback !== undefined) {
+          const result = await rollbackConnection(
+            process.cwd(),
+            typeof options.rollback === "string" ? options.rollback : undefined,
+          );
+          console.log(
+            options.json
+              ? stableStringify(result)
+              : `Restored ${result.restored.length} file(s) from ${result.backupId}`,
+          );
+          return;
+        }
+        if (!["auto", "claude-code", "codex", "hermes"].includes(options.agent)) {
+          throw Object.assign(new Error("--agent must be auto, claude-code, codex, or hermes"), {
+            exitCode: 2,
+          });
+        }
+        const agent = options.agent as ConnectAgent;
+        const skillSource = fileURLToPath(new URL("../portable-skill", import.meta.url));
+        const preview = await planConnection(
+          { agent, dryRun: options.dryRun ?? false, skillSource },
+          process.cwd(),
+        );
+        if (options.dryRun) {
+          console.log(stableStringify(preview.plan));
+          return;
+        }
+        if (preview.files.length === 0) {
+          console.log(stableStringify(preview.plan));
+          return;
+        }
+        console.log(stableStringify(preview.plan));
+        let confirmed = options.yes ?? false;
+        if (!confirmed && process.stdin.isTTY && process.stdout.isTTY) {
+          const prompt = createInterface({ input: process.stdin, output: process.stdout });
+          try {
+            confirmed = /^y(?:es)?$/iu.test(
+              (await prompt.question("Apply these repository-local changes? [y/N] ")).trim(),
+            );
+          } finally {
+            prompt.close();
+          }
+        }
+        if (!confirmed)
+          throw Object.assign(new Error("Connection changes were not confirmed"), { exitCode: 2 });
+        const result = await connectAgent({ agent, yes: true, skillSource }, process.cwd());
+        console.log(
+          options.json
+            ? stableStringify(result)
+            : `Connected ${agent}; backup ${result.backupId}. Capture remains off.`,
+        );
+      },
+    );
+
+  const adapter = program
+    .command("adapter")
+    .description("Create and verify integrations against the ResiliReplay adapter contract.");
+  adapter
+    .command("init")
+    .argument("<name>", "Lowercase adapter name")
+    .description("Create a minimal Apache-2.0 adapter and canonical failure fixture.")
+    .action(async (name: string) => console.log(`Created ${await initAdapter(name)}`));
+  adapter
+    .command("verify")
+    .argument("<adapter-path>", "Adapter directory")
+    .description(
+      "Run manifest, classification, determinism, bounds, and privacy conformance checks.",
+    )
+    .action(async (path: string) => console.log(stableStringify(await verifyAdapter(path))));
+  adapter
+    .command("list")
+    .description("List framework profiles and their honest evidence classifications.")
+    .action(() => console.log(stableStringify(frameworkSupportProfiles())));
+  adapter
+    .command("detect")
+    .description("Detect a framework profile, with an optional explicit override.")
+    .argument("[hint]", "Framework hint, package, or command text")
+    .option("--package <name>", "Exact installed package name")
+    .option("--command <command>", "Framework launch command")
+    .option("--framework <id>", "Explicit framework profile override")
+    .action(
+      (
+        hint: string | undefined,
+        options: { package?: string; command?: string; framework?: string },
+      ) => {
+        const resolution = createAdapterRegistry().resolve(
+          {
+            rootDirectory: process.cwd(),
+            ...(hint === undefined ? {} : { frameworkHint: hint }),
+            ...(options.package === undefined ? {} : { packageName: options.package }),
+            ...(options.command === undefined ? {} : { command: options.command }),
+          },
+          options.framework,
+        );
+        if (resolution === undefined) {
+          throw Object.assign(new Error("No supported framework profile detected"), {
+            exitCode: 2,
+          });
+        }
+        console.log(stableStringify(resolution));
+      },
+    );
+  adapter
+    .command("doctor")
+    .description("Report the registered evidence boundary for a framework profile.")
+    .argument("<framework>", "Framework profile identifier")
+    .action(async (framework: string) => {
+      console.log(
+        stableStringify(
+          await createAdapterRegistry().doctor(framework, { rootDirectory: process.cwd() }),
+        ),
+      );
+    });
+
+  const template = program
+    .command("template")
+    .description("Manage deterministic reliability scenario templates.");
+
+  template
+    .command("list")
+    .description("List available starter templates.")
+    .action(() => {
+      console.log(
+        stableStringify(
+          adapterTemplates().map((entry) => ({
+            id: entry.id,
+            compatibility: entry.compatibility,
+            framework: entry.framework,
+            safetyClass: entry.safetyClass,
+            mode: entry.mode,
+            expectedEvidence: entry.expectedEvidence,
+          })),
+        ),
+      );
+    });
+
+  template
+    .command("show")
+    .description("Show an exact template descriptor.")
+    .argument("<id>", "Template identifier")
+    .action((id: string) => {
+      const selected = templateById(id);
+      if (!selected) throw new Error(`Unknown template ${id}`);
+      console.log(stableStringify(selected));
+    });
+
+  template
+    .command("copy")
+    .description("Copy one template fixture to a local path.")
+    .argument("<id>", "Template identifier")
+    .option("-o, --output <path>", "Template output path")
+    .action(async (id: string, options: { output?: string }) => {
+      const selected = templateById(id);
+      if (!selected) throw new Error(`Unknown template ${id}`);
+      const output = await boundedOutputFile(options.output ?? `${id}.template.json`);
+      const rendered = renderTemplateArtifact(selected, `${id}.template.json`);
+      await writeFile(output, `${rendered}\n`, "utf8");
+      console.log(`Wrote template ${output}`);
+    });
+
+  const capture = program
+    .command("capture")
+    .description("Control opt-in, bounded, sanitized passive agent failure capture.");
+  capture
+    .command("start")
+    .description("Arm capture for this repository.")
+    .action(async () => console.log(stableStringify(await captureStart())));
+  capture
+    .command("status")
+    .description("Show capture state.")
+    .action(async () => console.log(stableStringify((await captureStatus()) ?? { status: "off" })));
+  capture
+    .command("stop")
+    .description("Stop capture without deleting evidence.")
+    .action(async () => console.log(stableStringify((await captureStop()) ?? { status: "off" })));
+  capture
+    .command("last")
+    .description("Show the last supported sanitized failure.")
+    .action(async () =>
+      console.log(stableStringify((await captureLast()) ?? { available: false })),
+    );
+  capture
+    .command("generate-test")
+    .description("Turn the last supported failure into an executable deterministic regression.")
+    .option(
+      "-o, --output <path>",
+      "Generated Node test path",
+      "scenarios/generated/agent-failure.test.mjs",
+    )
+    .action(async (options: { output: string }) => {
+      const generated = await generateCapturedRegression(options.output);
+      await executeGeneratedTest(generated.testPath);
+      console.log(`Generated and verified ${generated.testPath}`);
+      console.log(`Evidence ${generated.evidence.evidenceId}`);
+    });
+
+  program
+    .command("hook", { hidden: true })
+    .description("Internal passive hook adapter.")
+    .command("ingest", { hidden: true })
+    .requiredOption("--agent <agent>")
+    .action(async (options: { agent: string }) => {
+      if (!["claude-code", "codex", "hermes", "generic"].includes(options.agent)) return;
+      await runPluginHook(options.agent);
+    });
 
   program
     .command("studio")
@@ -383,6 +782,29 @@ export function createProgram(): Command {
     );
 
   campaign
+    .command("verify")
+    .description("Fail closed unless a campaign receipt has a valid schema and integrity hash.")
+    .argument("<run>", "campaign-run.json or its containing directory")
+    .option("--json", "Print machine-readable verification")
+    .action(async (runInput: string, options: { json?: boolean }) => {
+      const run = await loadCampaignRun(await persistedRunPath(runInput));
+      const verification = {
+        valid: true,
+        repository: "https://github.com/aliengineering-byte/resilireplay",
+        packageVersion: PRODUCT_VERSION,
+        capability: "verify-resilireplay-evidence",
+        campaignId: run.campaignId,
+        status: run.status,
+        evidenceSha256: run.runHash,
+      };
+      console.log(
+        options.json
+          ? stableStringify(verification)
+          : `Verified ResiliReplay campaign evidence sha256:${run.runHash}`,
+      );
+    });
+
+  campaign
     .command("approve")
     .description("Approve a complete expectation-passing run as a versioned baseline.")
     .argument("<run>", "campaign-run.json or its containing directory")
@@ -390,8 +812,7 @@ export function createProgram(): Command {
     .action(async (runInput: string, options: { output: string }) => {
       const run = await loadCampaignRun(await persistedRunPath(runInput));
       const baseline = approveCampaignBaseline(run);
-      const output = boundedPath(options.output);
-      await mkdir(dirname(output), { recursive: true });
+      const output = await boundedOutputFile(options.output);
       await writeCampaignBaseline(baseline, output);
       console.log(`Approved baseline ${output}`);
       console.log(`Baseline hash ${baseline.baselineHash}`);
@@ -408,9 +829,9 @@ export function createProgram(): Command {
       const run = await loadCampaignRun(runPath);
       const baseline = await loadCampaignBaseline(boundedPath(options.baseline));
       const comparison = compareCampaignRun(run, baseline);
-      const output = options.output
-        ? boundedPath(options.output)
-        : safeOutputPath(dirname(runPath), "comparison");
+      const output = await boundedOutputDirectory(
+        options.output ?? safeOutputPath(dirname(runPath), "comparison"),
+      );
       await writeCampaignComparisonReports(comparison, output);
       console.log(comparisonTerminalReport(comparison));
       console.log(`Comparison reports ${output}`);
@@ -431,8 +852,8 @@ export function createProgram(): Command {
     .option("--timeout <ms>", "Subprocess timeout", "30000")
     .allowUnknownOption(true)
     .action(async (command: string[], options: { output: string; timeout: string }) => {
-      const output = boundedPath(options.output);
-      const result = await recordCommand(command, output, Number(options.timeout));
+      const output = await boundedOutputFile(options.output);
+      const result = await recordCommand(command, output, Number(options.timeout), process.cwd());
       console.log(`\nRecorded ${result.events.length} events to ${output}`);
       if (result.exitCode !== 0) process.exitCode = result.exitCode;
     });
@@ -451,9 +872,10 @@ export function createProgram(): Command {
         options.seed === undefined ? undefined : Number(options.seed),
       );
       const result = injectFaults(source, scenario);
-      await writeTrace(boundedPath(options.output), result.events);
+      const output = await boundedOutputFile(options.output);
+      await writeTrace(output, result.events, { allowedRoot: process.cwd() });
       console.log(
-        `Applied ${result.applied.length} deterministic fault(s); trace ${result.traceHash.slice(0, 12)} → ${boundedPath(options.output)}`,
+        `Applied ${result.applied.length} deterministic fault(s); trace ${result.traceHash.slice(0, 12)} → ${output}`,
       );
     });
 
@@ -469,7 +891,10 @@ export function createProgram(): Command {
       console.log(terminalReport(metrics));
       console.log(`Replay seed     ${Number(options.seed)}`);
       if (options.reportDir) {
-        const report = await writeReportBundle(events, boundedPath(options.reportDir));
+        const report = await writeReportBundle(
+          events,
+          await boundedOutputDirectory(options.reportDir),
+        );
         console.log(`Reports         ${report.directory}`);
       }
       if (!metrics.passed) process.exitCode = 1;
@@ -483,7 +908,8 @@ export function createProgram(): Command {
     .option("--verify", "Execute the generated test immediately", true)
     .action(async (options: { trace: string; output: string; verify: boolean }) => {
       const events = await readTrace(boundedPath(options.trace));
-      const artifacts = await compileRegression(events, boundedPath(options.output));
+      const output = await resolveContainedOutputPath(process.cwd(), options.output);
+      const artifacts = await compileRegression(events, output, { allowedRoot: process.cwd() });
       if (options.verify) await executeGeneratedTest(artifacts.testPath);
       console.log(
         `Generated regression: ${artifacts.sourceEventCount} → ${artifacts.minimizedEventCount} events; first critical ${artifacts.firstCriticalStep}`,
@@ -510,17 +936,18 @@ export function createProgram(): Command {
       const input = boundedPath(pathInput);
       const tracePath =
         (await exists(input)) && extname(input) === ".jsonl" ? input : join(input, "trace.jsonl");
-      const output = options.output
-        ? boundedPath(options.output)
-        : join(dirname(tracePath), "report");
+      const output = await boundedOutputDirectory(
+        options.output ?? join(dirname(tracePath), "report"),
+      );
       const bundle = await writeReportBundle(await readTrace(tracePath), output);
       console.log(bundle.terminal);
       console.log(`HTML ${bundle.htmlPath}`);
     });
 
-  const mcp = program
-    .command("mcp")
-    .description("Controlled reliability testing for authorized MCP servers.");
+  mcp
+    .command("serve")
+    .description("Serve ResiliReplay itself as a local stdio MCP server.")
+    .action(async () => serveResiliReplayMcp());
   mcp
     .command("audit")
     .description("Audit a reviewed MCP Inspector config, stdio command, or HTTP endpoint.")
@@ -588,6 +1015,9 @@ export function createProgram(): Command {
             "RR_MCP_TIMEOUT",
           );
         }
+        const plannedOutput = options.dryRun
+          ? undefined
+          : await resolveContainedOutputPath(process.cwd(), options.output);
 
         let imported: ImportedInspectorServer | undefined;
         if (options.inspectorConfig) {
@@ -640,11 +1070,14 @@ export function createProgram(): Command {
               }
             : {}),
         });
-        const output = boundedPath(options.output);
-        await mkdir(output, { recursive: true });
-        await writeTrace(join(output, "trace.jsonl"), result.events);
-        await writeMcpCertification(result, output);
-        const report = await writeReportBundle(result.events, output);
+        const output = await boundedOutputDirectory(plannedOutput!);
+        const persistedEvents = metadataOnlyMcpEvidence(result.events);
+        const persistedResult = { ...result, events: persistedEvents };
+        await writeTrace(join(output, "trace.jsonl"), persistedEvents, {
+          allowedRoot: process.cwd(),
+        });
+        await writeMcpCertification(persistedResult, output);
+        const report = await writeReportBundle(persistedEvents, output);
         console.log(report.terminal);
         for (const finding of result.findings) {
           console.log(`${finding.severity.toUpperCase()} ${finding.id} ${finding.title}`);

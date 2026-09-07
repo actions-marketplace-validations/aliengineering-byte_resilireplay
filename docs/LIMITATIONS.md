@@ -1,9 +1,31 @@
 # Known limitations
 
-ResiliReplay v0.4.0 has these explicit boundaries:
+ResiliReplay v0.6.0 has these explicit boundaries:
+
+- **Agent evidence scope:** agent hooks preserve normalized outcomes, classifications, summaries, and hashes. They
+  cannot reconstruct prompts, transcripts, tool bodies, environment values, or personal paths.
+- **Hook authenticity:** vendor hook payloads are trusted as local observations, not cryptographically attested facts.
+- **Live verification:** Claude Code and Codex have official installation plus installed-runtime fixture evidence, not
+  model-authenticated live turns. Hermes has installation, skill, and MCP evidence without a model flow.
+- **Hermes capture:** Hermes uses the portable skill and ResiliReplay MCP server. Native passive hook capture is not
+  claimed for Hermes v0.6.0.
+- **Hosted tools:** Codex hosted tools do not emit the supported local PostToolUse surface and are ignored.
+- **Connection scope:** Claude and Codex direct hooks use repository-local configuration. Hermes’ official MCP command
+  writes its configured `HERMES_HOME`; review and back that configuration up before using the documented command.
+- **Public MCP directory:** the shipped default is local stdio. ResiliReplay does not operate a public HTTPS MCP
+  service, so the OpenAI directory submission is skills-only where the portal permits it.
+- **Hugging Face MCP:** the public static demo has no arbitrary command execution and is not advertised as an MCP
+  endpoint. Community MCP Spaces can require a user HF token.
 
 - **Execution isolation:** reviewed commands execute directly without a shell, but ResiliReplay is not
   an OS sandbox.
+- **Filesystem race boundary:** output roots, ancestors, and targets are checked with lexical and
+  real-path containment before writes. Node.js does not expose a portable directory-file-descriptor
+  write API, so an attacker who can replace checked directories concurrently retains a residual
+  time-of-check/time-of-use race. Run in a repository not writable by an untrusted local principal.
+- **Regression publication filesystems:** regression bundles use exclusive hard-link publication or
+  verified `COPYFILE_EXCL` fallback. A filesystem that safely supports neither primitive fails
+  closed. Remote filesystems may not provide the atomicity their local API surface suggests.
 - **MCP side effects:** discovery is read-only; an explicitly allowlisted and confirmed tool can still
   change server state.
 - **Studio exposure:** Studio is loopback-only and assumes the local browser/user account is trusted.
@@ -29,8 +51,8 @@ ResiliReplay v0.4.0 has these explicit boundaries:
   operation and arguments are safe and suitable for one duplicate attempt.
 - **Metrics:** deterministic scoring evaluates declared evidence, not open-ended semantic quality.
   Latency, tokens, cost, side effects, and coverage remain unavailable unless measured.
-- **Trace scale:** one trace is capped at 100,000 events and 32 MiB to bound memory use. Split larger
-  workloads into scenarios or campaigns.
+- **Trace scale:** one trace is capped at 100,000 events, 32 MiB, and 64 JSON nesting levels to bound
+  memory and stack use. Split larger workloads into scenarios or campaigns.
 - **Distribution:** npm publishes the self-contained `resilireplay` CLI. Internal workspace packages
   are not separate public APIs.
 

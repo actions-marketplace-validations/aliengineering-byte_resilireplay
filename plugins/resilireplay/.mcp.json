@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "resilireplay": {
+      "command": "npx",
+      "args": ["--yes", "resilireplay@0.7.0", "mcp", "serve"]
+    }
+  }
+}

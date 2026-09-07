@@ -1,13 +1,19 @@
 import { spawnSync } from "node:child_process";
 import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const root = resolve(".");
 const artifacts = join(root, ".artifacts", "package-smoke");
 const packageDirectory = join(root, "packages", "cli");
 const project = join(artifacts, "installed");
 const npmCandidates = [
+  ...(process.env.RESILIREPLAY_NPM_CLI_PATH
+    ? [resolve(process.env.RESILIREPLAY_NPM_CLI_PATH)]
+    : []),
   join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+  resolve(dirname(process.execPath), "..", "node_modules", "npm", "bin", "npm-cli.js"),
   resolve(dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
 ];
 let npmCli;
@@ -130,8 +136,19 @@ const expectedFiles = [
   "README.md",
   "bin/resilireplay.mjs",
   "dist/resilireplay.js",
+  "fixtures/demo-mcp-server.mjs",
   "package.json",
-];
+  "portable-skill/SKILL.md",
+  "portable-skill/agents/openai.yaml",
+  "portable-skill/assets/adapter-template.json",
+  "portable-skill/references/campaigns.md",
+  "portable-skill/references/capture.md",
+  "portable-skill/references/compatibility.md",
+  "portable-skill/references/privacy.md",
+  "portable-skill/references/regressions.md",
+  "portable-skill/scripts/detect.mjs",
+  "portable-skill/scripts/install.mjs",
+].sort();
 if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
   throw new Error(`Unexpected package contents: ${actualFiles.join(", ")}`);
 }
@@ -141,6 +158,7 @@ for (const [arguments_, expectation] of [
   [["--version"], sourceManifest.version],
   [["--help"], "Usage: resilireplay"],
   [["faults"], "malformed-json"],
+  [["capture", "status"], '"status":"off"'],
 ]) {
   const result = spawnSync(process.execPath, [cli, ...arguments_], {
     cwd: project,
@@ -153,9 +171,56 @@ for (const [arguments_, expectation] of [
   }
 }
 
+const connectProject = join(artifacts, "connect-dry-run");
+await mkdir(connectProject, { recursive: true });
+const connect = spawnSync(process.execPath, [cli, "connect", "--agent", "auto", "--dry-run"], {
+  cwd: connectProject,
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 10_000,
+});
+if (connect.status !== 0) {
+  throw new Error(`Packed connect dry-run failed: ${connect.stdout ?? ""}${connect.stderr ?? ""}`);
+}
+const connectPlan = JSON.parse(connect.stdout);
+if (
+  connectPlan.captureArmed !== false ||
+  connectPlan.dryRun !== true ||
+  connectPlan.changes.length !== 10 ||
+  (await readdir(connectProject)).length !== 0
+) {
+  throw new Error(`Packed connect dry-run had unexpected effects: ${connect.stdout}`);
+}
+
+const mcpTransport = new StdioClientTransport({
+  command: process.execPath,
+  args: [cli, "mcp", "serve"],
+  cwd: project,
+  stderr: "pipe",
+});
+const mcpClient = new Client({ name: "resilireplay-package-smoke", version: "1.0.0" });
+try {
+  await mcpClient.connect(mcpTransport);
+  const listed = await mcpClient.listTools();
+  if (
+    listed.tools.length !== 10 ||
+    listed.tools.some(
+      (tool) =>
+        !tool.annotations ||
+        !["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"].every(
+          (name) => typeof tool.annotations?.[name] === "boolean",
+        ),
+    )
+  ) {
+    throw new Error("Packed MCP server did not expose ten fully annotated tools");
+  }
+} finally {
+  await mcpClient.close();
+}
+
 const demoProject = join(artifacts, "demo-empty");
 await mkdir(demoProject, { recursive: true });
-const demo = spawnSync(process.execPath, [cli, "demo", "--json", "--no-color"], {
+const demo = spawnSync(process.execPath, [cli, "mcp", "demo", "--json", "--no-color"], {
   cwd: demoProject,
   encoding: "utf8",
   windowsHide: true,
@@ -166,7 +231,12 @@ if (demo.status !== 0) {
 }
 const demoResult = JSON.parse(demo.stdout);
 if (
-  demoResult.status !== "passed" ||
+  demoResult.result !== "PASS" ||
+  demoResult.cleanControl !== "PASS" ||
+  demoResult.recoveryAttempts !== 1 ||
+  demoResult.duplicateEffects !== 0 ||
+  demoResult.regressionExecuted !== true ||
+  demoResult.cleanupComplete !== true ||
   demoResult.durationMs >= 30_000 ||
   demoResult.outputDirectory !== null ||
   (await readdir(demoProject)).length !== 0
@@ -296,7 +366,7 @@ for (const arguments_ of [
 }
 
 console.log(
-  `Single-package npm installation, demo, and adopt dry-run smoke passed: resilireplay ${sourceManifest.version}`,
+  `Single-package npm installation, capture-off, connect dry-run, MCP, demo, and adopt smoke passed: resilireplay ${sourceManifest.version}`,
 );
 console.log(
   `Packed full adoption passed: ${fullAdoptResult.durationMs}ms, ${fullAdoptResult.createdFiles.length} artifacts, campaign ${fullAdoptResult.campaignHash}`,

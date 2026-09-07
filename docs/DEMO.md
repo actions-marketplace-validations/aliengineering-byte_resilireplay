@@ -3,12 +3,26 @@
 ResiliReplay demos execute repository-owned local fixtures. They use no API key, paid model, external
 account, telemetry, or prerecorded pass result. Fixture output is not presented as a live provider.
 
-## Zero-configuration v0.4 demo
+## Framework layer
+
+```console
+pnpm install --frozen-lockfile
+pnpm build
+pnpm demo:frameworks
+```
+
+This local command proves registry detection, conservative capability manifests, an
+AutoGen-compatible OTLP fixture, a documented CrewAI callback mapping, secret redaction, and a
+disabled-by-default semantic advisor. The output retains the evidence class for every framework; it
+does not promote fixture or documented mappings to genuine runtime evidence. LangGraph and OpenAI
+Agents have separate pinned genuine-runtime suites described in [FRAMEWORKS.md](FRAMEWORKS.md).
+
+## Zero-configuration product demo
 
 From an empty directory:
 
 ```console
-npx --yes resilireplay@0.4.0 demo
+npx --yes resilireplay@0.6.0 demo
 ```
 
 The packaged deterministic fixture runs a clean control, injects one MCP-shaped tool-result error,
@@ -16,7 +30,7 @@ recovers with one bounded retry, verifies an expected malicious-canary negative 
 executable regression, and executes that regression. Without `--output`, its temporary workspace is
 removed. The same seed produces the same canonical evidence hash.
 
-The public GIF, static fallback, and transcript are generated from the packed v0.4.0 package rather
+The public GIF, static fallback, and transcript are generated from the packed v0.6.0 package rather
 than typed output:
 
 ![Genuine packed-package demo](assets/adopt-demo.gif)
@@ -24,6 +38,23 @@ than typed output:
 [Static fallback](assets/adopt-demo.png) - [captured transcript](assets/adopt-demo-transcript.txt)
 
 See [ADOPT.md](ADOPT.md) for the next step against an existing MCP configuration.
+
+## Everywhere: passive agent capture
+
+```console
+npx --yes resilireplay@0.6.0 connect --agent auto --dry-run
+npx --yes resilireplay@0.6.0 capture start
+pnpm demo:agent
+```
+
+The Everywhere demo runs a real repository-owned command that exits 7, passes the documented hook
+payload through the bundled normalization/capture path, displays bounded evidence, generates an
+executable regression, and runs that regression successfully. It performs no automatic retry and
+uses no model credential.
+
+![Everywhere controlled failure to regression](assets/everywhere-demo.gif)
+
+[Static fallback](assets/everywhere-demo.png) - [captured transcript](assets/everywhere-demo-transcript.txt)
 
 ## Studio & Campaigns
 

@@ -3,6 +3,9 @@ dist
 coverage
 runs
 .artifacts
+plugins/resilireplay/runtime/hook-runtime.mjs
 docs/case-studies
+examples/mcp-reliability/generated-regression
+examples/mcp-reliability-ci/regression-example
 pnpm-lock.yaml
 LICENSE

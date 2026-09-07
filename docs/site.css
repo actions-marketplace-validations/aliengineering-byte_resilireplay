@@ -367,6 +367,12 @@ pre code {
 .contrast .eyebrow {
   color: var(--lime);
 }
+.contrast .section-heading > p:last-child {
+  color: #dce7e3;
+}
+.contrast .button.secondary.light {
+  color: var(--white);
+}
 .comparison-grid {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -403,6 +409,9 @@ pre code {
     700 0.72rem/1 ui-monospace,
     monospace;
 }
+.section:not(.contrast) .step-number {
+  color: var(--teal-dark);
+}
 .flow-arrow {
   align-self: center;
   color: var(--lime);
@@ -410,8 +419,12 @@ pre code {
 }
 .disclaimer {
   margin: 30px 0 0;
-  color: #b7cbc7;
+  color: var(--muted);
   font-size: 0.85rem;
+}
+.contrast .disclaimer,
+.contrast .disclaimer a {
+  color: #b7cbc7;
 }
 
 .workflow-list {
@@ -450,6 +463,34 @@ pre code {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 22px;
+}
+
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  background: var(--white);
+}
+.table-wrap table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+.table-wrap th,
+.table-wrap td {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.table-wrap th {
+  color: var(--teal-dark);
+  font-size: 0.76rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.table-wrap tr:last-child td {
+  border-bottom: 0;
 }
 .case-card {
   overflow: hidden;
@@ -713,7 +754,7 @@ pre code {
     padding-right: 22px;
   }
   h1 {
-    font-size: clamp(3.6rem, 19vw, 5.8rem);
+    font-size: clamp(3.2rem, 15.5vw, 5.8rem);
   }
   .comparison-grid {
     grid-template-columns: 1fr;

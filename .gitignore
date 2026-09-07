@@ -1,13 +1,16 @@
 node_modules/
 dist/
+packages/cli/portable-skill/
 coverage/
 .artifacts/
+.resilireplay/
 runs/
 playwright-report/
 test-results/
 *.tgz
 *.log
 *.tsbuildinfo
+tmp-lg*.mjs
 .DS_Store
 Thumbs.db
 /docs/case-studies/playwright-mcp/browsers/
